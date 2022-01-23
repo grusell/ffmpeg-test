@@ -1,0 +1,9 @@
+main
+build
+vpp
+builddir
+subprojects/*
+!subprojects/*.wrap
+.#*
+vivictpp_*.snap
+.dir-locals.el
