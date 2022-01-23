@@ -10,7 +10,7 @@ extern "C" {
 
 struct ReadPacketResult {
   int ret = 0;
-  AVPacket *packet = nullptr;;
+  AVPacket *packet = nullptr;
   bool keyframe = false;
 };
 
@@ -37,8 +37,20 @@ public:
     }
   };
 
-  AVPacket *seek( int stream_index, int64_t min_ts, int64_t ts, int64_t max_ts, int flags = 0) {
+  AVPacket *seekFile( int stream_index, int64_t min_ts, int64_t ts, int64_t max_ts, int flags = 0) {
     int ret = avformat_seek_file(formatContext, stream_index, min_ts, ts, max_ts, flags);
+    if (ret < 0) {
+      throw std::runtime_error("Seek failed: " + std::to_string(ret));
+    }
+    ret = av_read_frame(formatContext, packet);
+    if (ret < 0) {
+      throw std::runtime_error("Read frame failed: " + std::to_string(ret));
+    }
+    return packet;
+  };
+
+  AVPacket *seekFrame( int stream_index, int64_t ts, int flags = 0) {
+    int ret = av_seek_frame(formatContext, stream_index, ts, flags);
     if (ret < 0) {
       throw std::runtime_error("Seek failed: " + std::to_string(ret));
     }
@@ -80,54 +92,67 @@ int test_seek(AVFormatContext *formatContext, int stream_index, int64_t min_ts, 
 
 const int NO_FLAGS = 0;
 
-TEST_CASE( "Test seek" ) {
   /*
     Timebase: 90000
-    Stream start: 1.4
+    Stream start: 0
     Keyframes at:
-    1.400000   126000
-    6.400000   576000
-    11.400000  1026000
-    16.400000  1476000
-    21.400000
-    26.400000
-    31.400000
-    36.400000
-    41.400000
-    46.400000
-    51.400000
-    56.400000
-
+    0.0        0
+    5.0        450000
+    10.0       900000
+    ...
 
    */
-  const int64_t FIRST_IFRAME_TS = 126000;
-  const int64_t SECOND_IFRAME_TS = 576000;
-  const int64_t LAST_IFRAME_TS = 5076000;
-  
-  TestContext ctx("../testdata/data1/a.m3u8");
+  const int64_t FIRST_IFRAME_TS = 0;
+  const int64_t SECOND_IFRAME_TS = 450000;
+  const int64_t LAST_IFRAME_TS = 4950000;
+
+TEST_CASE( "Test avformat_seek_file" ) { 
+  TestContext ctx("../testdata/data1/b.m3u8");
 
   SECTION( "Ts and max Ts is first keyframe " ) {
-    //   test_seek(formatContext, stream_index, 0, 126000, 126000, 0, 126000);
-    AVPacket* pkt = ctx.seek(0, 0, FIRST_IFRAME_TS, FIRST_IFRAME_TS, NO_FLAGS);
+    AVPacket* pkt = ctx.seekFile(0, 0, FIRST_IFRAME_TS, FIRST_IFRAME_TS, NO_FLAGS);
     REQUIRE(pkt->dts == FIRST_IFRAME_TS);
     REQUIRE(pkt->flags & AV_PKT_FLAG_KEY);
   }
 
   SECTION( "Ts on first keyframe, ts_max before second keyframe") {
-    AVPacket* pkt = ctx.seek(0, 0, FIRST_IFRAME_TS, SECOND_IFRAME_TS - 1000, NO_FLAGS);
+    AVPacket* pkt = ctx.seekFile(0, 0, FIRST_IFRAME_TS, SECOND_IFRAME_TS - 1000, NO_FLAGS);
     REQUIRE(pkt->dts == FIRST_IFRAME_TS);
     REQUIRE(pkt->flags & AV_PKT_FLAG_KEY);
   }
 
   SECTION("Seek second iframe, ts before second iframe") {
-     AVPacket* pkt = ctx.seek(0, 0, SECOND_IFRAME_TS - 76000, 1000000, NO_FLAGS);
+     AVPacket* pkt = ctx.seekFile(0, 0, SECOND_IFRAME_TS - 1000, SECOND_IFRAME_TS + 40000, NO_FLAGS);
     REQUIRE(pkt->dts == SECOND_IFRAME_TS);
     REQUIRE(pkt->flags & AV_PKT_FLAG_KEY);
   }
 
   SECTION("Seek second iframe, ts after second iframe") {
-     AVPacket* pkt = ctx.seek(0, 0, SECOND_IFRAME_TS + 76000, 1000000, NO_FLAGS);
+    AVPacket* pkt = ctx.seekFile(0, 0, SECOND_IFRAME_TS + 1000, SECOND_IFRAME_TS + 40000, NO_FLAGS);
     REQUIRE(pkt->dts == SECOND_IFRAME_TS);
+    REQUIRE(pkt->flags & AV_PKT_FLAG_KEY);
+  }
+}
+
+
+TEST_CASE( "Test av_seek_frame" ) { 
+  TestContext ctx("../testdata/data1/b.m3u8");
+
+  SECTION( "Ts is first keyframe " ) {
+    AVPacket* pkt = ctx.seekFrame(0, FIRST_IFRAME_TS,  NO_FLAGS);
+    REQUIRE(pkt->dts == FIRST_IFRAME_TS);
+    REQUIRE(pkt->flags & AV_PKT_FLAG_KEY);
+  }
+
+  SECTION( "Ts before second keyframe, seek forward") {
+    AVPacket* pkt = ctx.seekFrame(0, FIRST_IFRAME_TS + 200,  NO_FLAGS);
+    REQUIRE(pkt->dts == SECOND_IFRAME_TS);
+    REQUIRE(pkt->flags & AV_PKT_FLAG_KEY);
+  }
+
+  SECTION("Ts before second iframe, seek backwards") {
+     AVPacket* pkt = ctx.seekFrame(0, SECOND_IFRAME_TS - 1000, AVSEEK_FLAG_BACKWARD);
+    REQUIRE(pkt->dts == FIRST_IFRAME_TS);
     REQUIRE(pkt->flags & AV_PKT_FLAG_KEY);
   }
 
