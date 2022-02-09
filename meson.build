@@ -28,4 +28,4 @@ test_deps = [
 incdir = include_directories('include')
 
 seekTest= executable('seekTest', 'test/seek_test.cc',  dependencies: deps + test_deps, include_directories: incdir)
-test('seek', seekTest)
+test('seek', seekTest, args: ['-sr', 'compact'])

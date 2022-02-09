@@ -20,6 +20,7 @@ public:
   TestContext(std::string file):
     formatContext(nullptr),
     packet(av_packet_alloc()) {
+    av_log_set_level(AV_LOG_ERROR);
     if(avformat_open_input(&formatContext,
                            file.c_str(),
                            NULL,
@@ -39,29 +40,30 @@ public:
   };
 
   void readPacket() {
-    int ret = av_read_frame(formatContext, packet);
-    if (ret < 0) {
-        throw std::runtime_error("Read frame failed: " + std::to_string(ret));
-    }
+    packet = nextPacketFromStream(-1);
     av_packet_unref(packet);
   };
+
+  AVPacket *nextPacketFromStream(int stream_index) {
+     while(1) {
+      int ret = av_read_frame(formatContext, packet);
+      if (ret < 0) {
+        throw std::runtime_error("Read frame failed: " + std::to_string(ret));
+      }
+      if (stream_index == -1 || packet->stream_index == stream_index) {
+        return packet;
+      } else {
+        av_packet_unref(packet);
+      }
+    }
+  }
 
   AVPacket *seekFile( int stream_index, int64_t min_ts, int64_t ts, int64_t max_ts, int flags = 0) {
     int ret = avformat_seek_file(formatContext, stream_index, min_ts, ts, max_ts, flags);
     if (ret < 0) {
       throw std::runtime_error("Seek failed: " + std::to_string(ret));
     }
-    while(1) {
-      ret = av_read_frame(formatContext, packet);
-      if (ret < 0) {
-        throw std::runtime_error("Read frame failed: " + std::to_string(ret));
-      }
-      if (packet->stream_index == stream_index) {
-        return packet;
-      } else {
-        av_packet_unref(packet);
-      }
-    }
+    return nextPacketFromStream(stream_index);
   };
 
   AVPacket *seekFrame( int stream_index, int64_t ts, int flags = 0) {
@@ -69,11 +71,7 @@ public:
     if (ret < 0) {
       throw std::runtime_error("Seek failed: " + std::to_string(ret));
     }
-    ret = av_read_frame(formatContext, packet);
-    if (ret < 0) {
-      throw std::runtime_error("Read frame failed: " + std::to_string(ret));
-    }
-    return packet;
+    return nextPacketFromStream(stream_index);
   };
 
 private:
@@ -109,7 +107,7 @@ const int AUDIO_STREAM_INDEX = 0;
 
 const std::string testdata("../testdata/data3/master.m3u8");
 
-TEST_CASE( "Seek videostream with avformat_seek_file" ) {
+TEST_CASE( "Seek videostream with avformat_seek_file", "[.]" ) {
   TestContext ctx(testdata);
   ctx.readPacket();  // Need to read packet so that first segment ts is known when we call seek
   
@@ -169,19 +167,26 @@ TEST_CASE("Test for bug in hls.c find_timestamp_in_playlist", "[.]") {
 
 }
 
-TEST_CASE( "Seek audiostream with avformat_seek_file" ) { 
+TEST_CASE( "Seek audiostream with av_seek_frame" ) {
   TestContext ctx(testdata);
   ctx.readPacket();
 
-  SECTION( "Ts and max Ts is first keyframe " ) {
-    AVPacket* pkt = ctx.seekFile(AUDIO_STREAM_INDEX, FIRST_AUDIO_TS, SECOND_AUDIOFRAME_TS, SECOND_AUDIOFRAME_TS, NO_FLAGS);
+  SECTION( "Ts second frame seek forward " ) {
+    AVPacket* pkt = ctx.seekFrame(AUDIO_STREAM_INDEX, SECOND_AUDIOFRAME_TS, NO_FLAGS);
     REQUIRE(pkt->dts == SECOND_AUDIOFRAME_TS);
     REQUIRE(pkt->flags & AV_PKT_FLAG_KEY);
   }
 
-  SECTION( "Ts at third frame, ts_max before fourth frame") {
+  SECTION( "Ts at third frame seek forward") {
     int64_t ts = FIRST_AUDIO_TS + 3 * AUDIO_FRAME_DURATION;
-    AVPacket* pkt = ctx.seekFile(AUDIO_STREAM_INDEX, 0, ts, ts + AUDIO_FRAME_DURATION/2, NO_FLAGS);
+    AVPacket* pkt = ctx.seekFrame(AUDIO_STREAM_INDEX, ts, NO_FLAGS);
+    REQUIRE(pkt->dts == ts);
+    REQUIRE(pkt->flags & AV_PKT_FLAG_KEY);
+  }
+
+  SECTION( "Ts tenth frame seek backward" ) {
+    int64_t ts = FIRST_AUDIO_TS + 9 * AUDIO_FRAME_DURATION;
+    AVPacket* pkt = ctx.seekFrame(AUDIO_STREAM_INDEX, ts, AVSEEK_FLAG_BACKWARD);
     REQUIRE(pkt->dts == ts);
     REQUIRE(pkt->flags & AV_PKT_FLAG_KEY);
   }
@@ -192,26 +197,32 @@ TEST_CASE( "Seek audiostream with avformat_seek_file" ) {
 TEST_CASE( "Test av_seek_frame" ) { 
   TestContext ctx(testdata);
   ctx.readPacket();
-  
+
   SECTION( "Ts is first keyframe " ) {
     AVPacket* pkt = ctx.seekFrame(VIDEO_STREAM_INDEX, FIRST_IFRAME_TS,  NO_FLAGS);
     REQUIRE(pkt->dts == FIRST_IFRAME_TS);
     REQUIRE(pkt->flags & AV_PKT_FLAG_KEY);
   }
 
-  SECTION( "Ts before second keyframe, seek forward") {
-    AVPacket* pkt = ctx.seekFrame(VIDEO_STREAM_INDEX, FIRST_IFRAME_TS + 200,  NO_FLAGS);
+  SECTION( "Ts before second keyframe seek forward") {
+    AVPacket* pkt = ctx.seekFrame(VIDEO_STREAM_INDEX, FIRST_IFRAME_TS + 7200,  NO_FLAGS);
     REQUIRE(pkt->dts == SECOND_IFRAME_TS);
     REQUIRE(pkt->flags & AV_PKT_FLAG_KEY);
   }
 
-  SECTION("Ts before second iframe, seek backwards") {
+  SECTION( "Ts after second keyframe seek backward") {
+    AVPacket* pkt = ctx.seekFrame(VIDEO_STREAM_INDEX, SECOND_IFRAME_TS + 7200,  AVSEEK_FLAG_BACKWARD);
+    REQUIRE(pkt->dts == FIRST_IFRAME_TS);
+    REQUIRE(pkt->flags & AV_PKT_FLAG_KEY);
+  }
+
+  SECTION("Ts before second iframe seek backwards") {
     AVPacket* pkt = ctx.seekFrame(VIDEO_STREAM_INDEX, SECOND_IFRAME_TS - 14400, AVSEEK_FLAG_BACKWARD);
     REQUIRE(pkt->dts == FIRST_IFRAME_TS);
     REQUIRE(pkt->flags & AV_PKT_FLAG_KEY);
   }
 
-  SECTION("Ts just before second iframe, seek backwards") {
+  SECTION("Ts just before second iframe seek backwards") {
     AVPacket* pkt = ctx.seekFrame(VIDEO_STREAM_INDEX, SECOND_IFRAME_TS - 3600, AVSEEK_FLAG_BACKWARD);
     REQUIRE(pkt->dts == FIRST_IFRAME_TS);
     REQUIRE(pkt->flags & AV_PKT_FLAG_KEY);
