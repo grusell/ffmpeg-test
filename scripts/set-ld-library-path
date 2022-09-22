@@ -1,0 +1,10 @@
+export FFMPEG_DIR=~/gitrepos/private/FFmpeg
+export LD_LIBRARY_PATH=$FFMPEG_DIR/libavdevice/:\
+$FFMPEG_DIR/libavfilter:\
+$FFMPEG_DIR/libavcodec:\
+$FFMPEG_DIR/libavresample:\
+$FFMPEG_DIR/libswscale:\
+$FFMPEG_DIR/libavutil:\
+$FFMPEG_DIR/libpostproc:\
+$FFMPEG_DIR/libavformat:\
+$FFMPEG_DIR/libswresample
